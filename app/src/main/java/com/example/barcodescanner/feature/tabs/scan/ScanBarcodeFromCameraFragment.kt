@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -22,6 +23,7 @@ import com.example.barcodescanner.feature.tabs.scan.file.ScanBarcodeFromFileActi
 import com.example.barcodescanner.model.Barcode
 import com.example.barcodescanner.usecase.SupportedBarcodeFormats
 import com.example.barcodescanner.usecase.save
+import com.google.gson.Gson
 import com.google.zxing.Result
 import com.google.zxing.ResultMetadataType
 import io.reactivex.Completable
@@ -30,7 +32,12 @@ import io.reactivex.disposables.CompositeDisposable
 import io.reactivex.rxkotlin.addTo
 import io.reactivex.schedulers.Schedulers
 import kotlinx.android.synthetic.main.fragment_scan_barcode_from_camera.*
+import java.io.InputStreamReader
+import java.net.URL
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.HttpsURLConnection
+
 
 class ScanBarcodeFromCameraFragment : Fragment(), ConfirmBarcodeDialogFragment.Listener {
 
@@ -49,7 +56,13 @@ class ScanBarcodeFromCameraFragment : Fragment(), ConfirmBarcodeDialogFragment.L
     private var toast: Toast? = null
     private var lastResult: Barcode? = null
 
-    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View? {
+
         return inflater.inflate(R.layout.fragment_scan_barcode_from_camera, container, false)
     }
 
@@ -71,10 +84,17 @@ class ScanBarcodeFromCameraFragment : Fragment(), ConfirmBarcodeDialogFragment.L
         if (areAllPermissionsGranted()) {
             initZoomSeekBar()
             codeScanner.startPreview()
+            text_view_qr.text = ""
+            text_view_qr2.text = ""
+            button_reset_application.visibility = View.INVISIBLE
         }
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
         if (requestCode == PERMISSION_REQUEST_CODE && areAllPermissionsGranted(grantResults)) {
             initZoomSeekBar()
             codeScanner.startPreview()
@@ -155,6 +175,82 @@ class ScanBarcodeFromCameraFragment : Fragment(), ConfirmBarcodeDialogFragment.L
         }
     }
 
+
+    private fun fetchCurrencyData(result: Result): Thread {
+        return Thread {
+
+            val url = URL(
+                "https://posgradobolivia.bo/backend-qr/public/buscar/${
+                    URLEncoder.encode(
+                        result.text,
+                        Charsets.UTF_8.name()
+                    )
+                }"
+            )
+            val connection = url.openConnection() as HttpsURLConnection
+
+            if (connection.responseCode == 200) {
+                val inputSystem = connection.inputStream
+                val inputStreamReader = InputStreamReader(inputSystem, "UTF-8")
+                val request = Gson().fromJson(inputStreamReader, Request::class.java)
+                updateUI(request)
+
+                inputStreamReader.close()
+                inputSystem.close()
+            } else {
+                requireActivity().runOnUiThread {
+                    text_view_qr.text = "Fallo de conexión"
+                }
+            }
+        }
+    }
+
+    private fun updateUI(request: Request) {
+        Log.d("Request", request.toString())
+        requireActivity().runOnUiThread {
+            if (request.exito) {
+                text_view_qr.text = request.datos.nombre_completo
+                text_view_qr2.text = request.datos.estado
+                button_reset_application.visibility = View.VISIBLE
+            } else {
+                 text_view_qr.text = request.mensaje
+            }
+        }
+    }
+
+    private fun handleScannedBarcode(result: Result) {
+        fetchCurrencyData(result).start()
+        vibrateIfNeeded()
+        button_reset_application.setOnClickListener {
+            text_view_qr.text = ""
+            text_view_qr2.text = ""
+            button_reset_application.visibility = View.GONE
+            //navigateToBarcodeScreen(barcodeParser.parseResult(result))
+            saveScannedBarcode(barcodeParser.parseResult(result))
+        }
+        /* if (requireActivity().intent?.action == ZXING_SCAN_INTENT_ACTION) {
+            vibrateIfNeeded()
+            finishWithResult(result)
+
+            return
+        }
+
+        if (settings.continuousScanning && result.equalTo(lastResult)) {
+            restartPreviewWithDelay(false)
+            return
+        }
+
+
+
+        val barcode = barcodeParser.parseResult(result)
+
+        when {
+            settings.confirmScansManually -> showScanConfirmationDialog(barcode)
+            settings.saveScannedBarcodesToHistory || settings.continuousScanning -> saveScannedBarcode(barcode)
+            else -> navigateToBarcodeScreen(barcode)
+        }*/
+    }
+
     private fun initZoomSeekBar() {
         scannerCameraHelper.getCameraParameters(settings.isBackCamera)?.apply {
             this@ScanBarcodeFromCameraFragment.maxZoom = maxZoom
@@ -178,8 +274,8 @@ class ScanBarcodeFromCameraFragment : Fragment(), ConfirmBarcodeDialogFragment.L
 
     private fun handleZoomChanged() {
         seek_bar_zoom.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onStartTrackingTouch(seekBar: SeekBar?) { }
-            override fun onStopTrackingTouch(seekBar: SeekBar?) { }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
 
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 if (fromUser) {
@@ -223,32 +319,11 @@ class ScanBarcodeFromCameraFragment : Fragment(), ConfirmBarcodeDialogFragment.L
         }
     }
 
-    private fun handleScannedBarcode(result: Result) {
-        if (requireActivity().intent?.action == ZXING_SCAN_INTENT_ACTION) {
-            vibrateIfNeeded()
-            finishWithResult(result)
-            return
-        }
-
-        if (settings.continuousScanning && result.equalTo(lastResult)) {
-            restartPreviewWithDelay(false)
-            return
-        }
-
-        vibrateIfNeeded()
-
-        val barcode = barcodeParser.parseResult(result)
-
-        when {
-            settings.confirmScansManually -> showScanConfirmationDialog(barcode)
-            settings.saveScannedBarcodesToHistory || settings.continuousScanning -> saveScannedBarcode(barcode)
-            else -> navigateToBarcodeScreen(barcode)
-        }
-    }
-
     private fun handleConfirmedBarcode(barcode: Barcode) {
         when {
-            settings.saveScannedBarcodesToHistory || settings.continuousScanning -> saveScannedBarcode(barcode)
+            settings.saveScannedBarcodesToHistory || settings.continuousScanning -> saveScannedBarcode(
+                barcode
+            )
             else -> navigateToBarcodeScreen(barcode)
         }
     }
@@ -269,33 +344,24 @@ class ScanBarcodeFromCameraFragment : Fragment(), ConfirmBarcodeDialogFragment.L
     }
 
     private fun saveScannedBarcode(barcode: Barcode) {
-        barcodeDatabase.save(barcode, settings.doNotSaveDuplicates)
-            .subscribeOn(Schedulers.io())
-            .observeOn(AndroidSchedulers.mainThread())
-            .subscribe(
-                { id ->
-                    lastResult = barcode
-                    when (settings.continuousScanning) {
-                        true -> restartPreviewWithDelay(true)
-                        else -> navigateToBarcodeScreen(barcode.copy(id = id))
-                    }
-                },
-                ::showError
-            )
-            .addTo(disposable)
+        barcodeDatabase.save(barcode, settings.doNotSaveDuplicates).subscribeOn(Schedulers.io())
+            .observeOn(AndroidSchedulers.mainThread()).subscribe({ id ->
+                lastResult = barcode
+                when (settings.continuousScanning) {
+                    true -> restartPreviewWithDelay(true)
+                    else -> navigateToBarcodeScreen(barcode.copy(id = id))
+                }
+            }, ::showError).addTo(disposable)
     }
 
     private fun restartPreviewWithDelay(showMessage: Boolean) {
-        Completable
-            .timer(CONTINUOUS_SCANNING_PREVIEW_DELAY, TimeUnit.MILLISECONDS)
-            .observeOn(AndroidSchedulers.mainThread())
-            .subscribe {
+        Completable.timer(CONTINUOUS_SCANNING_PREVIEW_DELAY, TimeUnit.MILLISECONDS)
+            .observeOn(AndroidSchedulers.mainThread()).subscribe {
                 if (showMessage) {
                     showToast(R.string.fragment_scan_barcode_from_camera_barcode_saved)
                 }
                 restartPreview()
-            }
-            .addTo(disposable)
+            }.addTo(disposable)
     }
 
     private fun restartPreview() {
@@ -317,11 +383,15 @@ class ScanBarcodeFromCameraFragment : Fragment(), ConfirmBarcodeDialogFragment.L
     }
 
     private fun requestPermissions() {
-        permissionsHelper.requestNotGrantedPermissions(requireActivity() as AppCompatActivity, PERMISSIONS, PERMISSION_REQUEST_CODE)
+        permissionsHelper.requestNotGrantedPermissions(
+            requireActivity() as AppCompatActivity,
+            PERMISSIONS,
+            PERMISSION_REQUEST_CODE
+        )
     }
 
     private fun areAllPermissionsGranted(): Boolean {
-       return permissionsHelper.areAllPermissionsGranted(requireActivity(), PERMISSIONS)
+        return permissionsHelper.areAllPermissionsGranted(requireActivity(), PERMISSIONS)
     }
 
     private fun areAllPermissionsGranted(grantResults: IntArray): Boolean {
@@ -337,8 +407,7 @@ class ScanBarcodeFromCameraFragment : Fragment(), ConfirmBarcodeDialogFragment.L
     }
 
     private fun finishWithResult(result: Result) {
-        val intent = Intent()
-            .putExtra("SCAN_RESULT", result.text)
+        val intent = Intent().putExtra("SCAN_RESULT", result.text)
             .putExtra("SCAN_RESULT_FORMAT", result.barcodeFormat.toString())
 
         if (result.rawBytes?.isNotEmpty() == true) {
@@ -360,8 +429,7 @@ class ScanBarcodeFromCameraFragment : Fragment(), ConfirmBarcodeDialogFragment.L
 
             metadata[ResultMetadataType.BYTE_SEGMENTS]?.let {
                 var i = 0
-                @Suppress("UNCHECKED_CAST")
-                for (seg in it as Iterable<ByteArray>) {
+                @Suppress("UNCHECKED_CAST") for (seg in it as Iterable<ByteArray>) {
                     intent.putExtra("SCAN_RESULT_BYTE_SEGMENTS_$i", seg)
                     ++i
                 }
